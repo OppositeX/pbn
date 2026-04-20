@@ -95,6 +95,102 @@ function pbn_register_routes() {
 		'callback'            => 'pbn_route_lead_capture',
 		'permission_callback' => '__return_true',
 	) );
+
+	// -- Plugin Management ---------------------------------------------------
+	register_rest_route( $ns, '/plugins', array(
+		'methods'             => WP_REST_Server::READABLE,
+		'callback'            => 'pbn_route_list_plugins',
+		'permission_callback' => 'pbn_check_auth',
+	) );
+
+	register_rest_route( $ns, '/plugins/activate', array(
+		'methods'             => WP_REST_Server::CREATABLE,
+		'callback'            => 'pbn_route_activate_plugin',
+		'permission_callback' => 'pbn_check_auth',
+	) );
+
+	register_rest_route( $ns, '/plugins/deactivate', array(
+		'methods'             => WP_REST_Server::CREATABLE,
+		'callback'            => 'pbn_route_deactivate_plugin',
+		'permission_callback' => 'pbn_check_auth',
+	) );
+
+	register_rest_route( $ns, '/plugins/update', array(
+		'methods'             => WP_REST_Server::CREATABLE,
+		'callback'            => 'pbn_route_update_plugin',
+		'permission_callback' => 'pbn_check_auth',
+	) );
+
+	register_rest_route( $ns, '/plugins/install', array(
+		'methods'             => WP_REST_Server::CREATABLE,
+		'callback'            => 'pbn_route_install_plugin',
+		'permission_callback' => 'pbn_check_auth',
+	) );
+
+	register_rest_route( $ns, '/plugins', array(
+		'methods'             => WP_REST_Server::DELETABLE,
+		'callback'            => 'pbn_route_delete_plugin',
+		'permission_callback' => 'pbn_check_auth',
+	) );
+
+	// -- WordPress Core -------------------------------------------------------
+	register_rest_route( $ns, '/core/update', array(
+		'methods'             => WP_REST_Server::CREATABLE,
+		'callback'            => 'pbn_route_update_core',
+		'permission_callback' => 'pbn_check_auth',
+	) );
+
+	register_rest_route( $ns, '/core/updates', array(
+		'methods'             => WP_REST_Server::READABLE,
+		'callback'            => 'pbn_route_check_core_updates',
+		'permission_callback' => 'pbn_check_auth',
+	) );
+
+	// -- Health & Errors --------------------------------------------------
+	register_rest_route( $ns, '/health', array(
+		'methods'             => WP_REST_Server::READABLE,
+		'callback'            => 'pbn_route_health_check',
+		'permission_callback' => 'pbn_check_auth',
+	) );
+
+	register_rest_route( $ns, '/error-log', array(
+		'methods'             => WP_REST_Server::READABLE,
+		'callback'            => 'pbn_route_error_log',
+		'permission_callback' => 'pbn_check_auth',
+	) );
+
+	// -- Cache ----------------------------------------------------------------
+	register_rest_route( $ns, '/cache/clear', array(
+		'methods'             => WP_REST_Server::CREATABLE,
+		'callback'            => 'pbn_route_clear_cache',
+		'permission_callback' => 'pbn_check_auth',
+	) );
+
+	// -- Options ----------------------------------------------------------
+	register_rest_route( $ns, '/options', array(
+		'methods'             => WP_REST_Server::READABLE,
+		'callback'            => 'pbn_route_get_options',
+		'permission_callback' => 'pbn_check_auth',
+	) );
+
+	register_rest_route( $ns, '/options', array(
+		'methods'             => WP_REST_Server::EDITABLE,
+		'callback'            => 'pbn_route_update_options',
+		'permission_callback' => 'pbn_check_auth',
+	) );
+
+	// -- Maintenance ----------------------------------------------------------
+	register_rest_route( $ns, '/maintenance', array(
+		'methods'             => WP_REST_Server::READABLE,
+		'callback'            => 'pbn_route_get_maintenance',
+		'permission_callback' => 'pbn_check_auth',
+	) );
+
+	register_rest_route( $ns, '/maintenance', array(
+		'methods'             => WP_REST_Server::CREATABLE,
+		'callback'            => 'pbn_route_set_maintenance',
+		'permission_callback' => 'pbn_check_auth',
+	) );
 }
 
 // ---------------------------------------------------------------------------
@@ -451,9 +547,692 @@ function pbn_route_lead_capture( WP_REST_Request $request ) {
 	) );
 }
 
-// ---------------------------------------------------------------------------
+// =========================================================================
+// NEW ENDPOINTS: Plugin Management
+// =========================================================================
+
+/**
+ * GET /pbn/v1/plugins — List all installed plugins
+ */
+function pbn_route_list_plugins( WP_REST_Request $request ) {
+	try {
+		if ( ! function_exists( 'get_plugins' ) ) {
+			require_once ABSPATH . 'wp-admin/includes/plugin.php';
+		}
+
+		$all_plugins = get_plugins();
+		$active_list = get_option( 'active_plugins', array() );
+		$updates_data = get_site_transient( 'update_plugins' );
+
+		$plugins = array();
+		foreach ( $all_plugins as $plugin_path => $plugin_data ) {
+			$slug = dirname( $plugin_path );
+			if ( '.' === $slug ) {
+				$slug = basename( $plugin_path, '.php' );
+			}
+
+			$is_active = in_array( $plugin_path, $active_list, true );
+			$update_available = false;
+			$new_version = $plugin_data['Version'];
+
+			if ( $updates_data && isset( $updates_data->response[ $plugin_path ] ) ) {
+				$update_available = true;
+				$new_version = $updates_data->response[ $plugin_path ]->new_version;
+			}
+
+			$plugins[] = array(
+				'slug'              => $slug,
+				'name'              => $plugin_data['Name'],
+				'version'           => $plugin_data['Version'],
+				'status'            => $is_active ? 'active' : 'inactive',
+				'update_available'  => $update_available,
+				'new_version'       => $new_version,
+				'description'       => $plugin_data['Description'],
+				'author'            => $plugin_data['Author'],
+			);
+		}
+
+		return rest_ensure_response( array(
+			'plugins' => $plugins,
+			'total'   => count( $plugins ),
+		) );
+	} catch ( Exception $e ) {
+		return new WP_Error( 'pbn_error', $e->getMessage(), array( 'status' => 500 ) );
+	}
+}
+
+/**
+ * POST /pbn/v1/plugins/activate — Activate a plugin
+ * Body: {slug}
+ */
+function pbn_route_activate_plugin( WP_REST_Request $request ) {
+	try {
+		if ( ! function_exists( 'get_plugins' ) ) {
+			require_once ABSPATH . 'wp-admin/includes/plugin.php';
+		}
+
+		$body = $request->get_json_params();
+		if ( empty( $body ) ) {
+			$body = $request->get_params();
+		}
+
+		if ( empty( $body['slug'] ) ) {
+			return new WP_Error( 'pbn_bad_request', 'slug is required.', array( 'status' => 400 ) );
+		}
+
+		$slug = sanitize_text_field( $body['slug'] );
+		$plugin_path = pbn_get_plugin_path( $slug );
+
+		if ( ! $plugin_path ) {
+			return new WP_Error( 'pbn_not_found', 'Plugin not found.', array( 'status' => 404 ) );
+		}
+
+		$result = activate_plugin( $plugin_path );
+		if ( is_wp_error( $result ) ) {
+			return $result;
+		}
+
+		return rest_ensure_response( array(
+			'success' => true,
+			'slug'    => $slug,
+			'status'  => 'active',
+		) );
+	} catch ( Exception $e ) {
+		return new WP_Error( 'pbn_error', $e->getMessage(), array( 'status' => 500 ) );
+	}
+}
+
+/**
+ * POST /pbn/v1/plugins/deactivate — Deactivate a plugin
+ * Body: {slug}
+ */
+function pbn_route_deactivate_plugin( WP_REST_Request $request ) {
+	try {
+		if ( ! function_exists( 'get_plugins' ) ) {
+			require_once ABSPATH . 'wp-admin/includes/plugin.php';
+		}
+
+		$body = $request->get_json_params();
+		if ( empty( $body ) ) {
+			$body = $request->get_params();
+		}
+
+		if ( empty( $body['slug'] ) ) {
+			return new WP_Error( 'pbn_bad_request', 'slug is required.', array( 'status' => 400 ) );
+		}
+
+		$slug = sanitize_text_field( $body['slug'] );
+		$plugin_path = pbn_get_plugin_path( $slug );
+
+		if ( ! $plugin_path ) {
+			return new WP_Error( 'pbn_not_found', 'Plugin not found.', array( 'status' => 404 ) );
+		}
+
+		deactivate_plugins( $plugin_path );
+
+		return rest_ensure_response( array(
+			'success' => true,
+			'slug'    => $slug,
+			'status'  => 'inactive',
+		) );
+	} catch ( Exception $e ) {
+		return new WP_Error( 'pbn_error', $e->getMessage(), array( 'status' => 500 ) );
+	}
+}
+
+/**
+ * POST /pbn/v1/plugins/update — Update plugins
+ * Body: {slug} or {slug: "all"}
+ */
+function pbn_route_update_plugin( WP_REST_Request $request ) {
+	try {
+		if ( ! function_exists( 'get_plugins' ) ) {
+			require_once ABSPATH . 'wp-admin/includes/plugin.php';
+		}
+		if ( ! class_exists( 'Plugin_Upgrader' ) ) {
+			require_once ABSPATH . 'wp-admin/includes/class-wp-upgrader.php';
+		}
+
+		$body = $request->get_json_params();
+		if ( empty( $body ) ) {
+			$body = $request->get_params();
+		}
+
+		if ( empty( $body['slug'] ) ) {
+			return new WP_Error( 'pbn_bad_request', 'slug is required.', array( 'status' => 400 ) );
+		}
+
+		$slug = sanitize_text_field( $body['slug'] );
+		$updated = array();
+		$failed = array();
+		$errors = array();
+
+		if ( 'all' === $slug ) {
+			// Update all plugins with available updates
+			$updates_data = get_site_transient( 'update_plugins' );
+			if ( $updates_data && ! empty( $updates_data->response ) ) {
+				foreach ( array_keys( $updates_data->response ) as $plugin_path ) {
+					$result = pbn_upgrade_single_plugin( $plugin_path );
+					if ( is_wp_error( $result ) ) {
+						$slug_name = dirname( $plugin_path );
+						$failed[] = $slug_name;
+						$errors[ $slug_name ] = $result->get_error_message();
+					} else {
+						$updated[] = $result;
+					}
+				}
+			}
+		} else {
+			// Update single plugin
+			$plugin_path = pbn_get_plugin_path( $slug );
+			if ( ! $plugin_path ) {
+				return new WP_Error( 'pbn_not_found', 'Plugin not found.', array( 'status' => 404 ) );
+			}
+
+			$result = pbn_upgrade_single_plugin( $plugin_path );
+			if ( is_wp_error( $result ) ) {
+				$failed[] = $slug;
+				$errors[ $slug ] = $result->get_error_message();
+			} else {
+				$updated[] = $result;
+			}
+		}
+
+		return rest_ensure_response( array(
+			'updated' => $updated,
+			'failed'  => $failed,
+			'errors'  => $errors,
+		) );
+	} catch ( Exception $e ) {
+		return new WP_Error( 'pbn_error', $e->getMessage(), array( 'status' => 500 ) );
+	}
+}
+
+/**
+ * POST /pbn/v1/plugins/install — Install a plugin
+ * Body: {source, activate: bool (optional)}
+ * source: wp.org slug OR full URL to zip
+ */
+function pbn_route_install_plugin( WP_REST_Request $request ) {
+	try {
+		if ( ! class_exists( 'Plugin_Upgrader' ) ) {
+			require_once ABSPATH . 'wp-admin/includes/class-wp-upgrader.php';
+		}
+		if ( ! function_exists( 'plugins_api' ) ) {
+			require_once ABSPATH . 'wp-admin/includes/plugin-install.php';
+		}
+
+		$body = $request->get_json_params();
+		if ( empty( $body ) ) {
+			$body = $request->get_params();
+		}
+
+		if ( empty( $body['source'] ) ) {
+			return new WP_Error( 'pbn_bad_request', 'source is required.', array( 'status' => 400 ) );
+		}
+
+		$source = sanitize_text_field( $body['source'] );
+		$activate = isset( $body['activate'] ) ? (bool) $body['activate'] : false;
+
+		$download_url = $source;
+
+		// If source is a slug, fetch the plugin info from wp.org
+		if ( ! preg_match( '#^https?://#', $source ) ) {
+			$api = plugins_api( 'plugin_information', array( 'slug' => $source ) );
+			if ( is_wp_error( $api ) ) {
+				return $api;
+			}
+			$download_url = $api->download_link;
+		}
+
+		$upgrader = new Plugin_Upgrader( new WP_Ajax_Upgrader_Skin() );
+		$result = $upgrader->install( $download_url );
+
+		if ( is_wp_error( $result ) ) {
+			return $result;
+		}
+
+		if ( $activate && $result ) {
+			// Get the plugin path from the result
+			$plugin_path = pbn_get_plugin_path_from_zip( $download_url );
+			if ( $plugin_path ) {
+				activate_plugin( $plugin_path );
+			}
+		}
+
+		return rest_ensure_response( array(
+			'success'  => true,
+			'source'   => $source,
+			'activated' => $activate,
+			'destination' => $result,
+		) );
+	} catch ( Exception $e ) {
+		return new WP_Error( 'pbn_error', $e->getMessage(), array( 'status' => 500 ) );
+	}
+}
+
+/**
+ * DELETE /pbn/v1/plugins — Delete a plugin
+ * Body: {slug}
+ */
+function pbn_route_delete_plugin( WP_REST_Request $request ) {
+	try {
+		if ( ! function_exists( 'get_plugins' ) ) {
+			require_once ABSPATH . 'wp-admin/includes/plugin.php';
+		}
+
+		$body = $request->get_json_params();
+		if ( empty( $body ) ) {
+			$body = $request->get_params();
+		}
+
+		if ( empty( $body['slug'] ) ) {
+			return new WP_Error( 'pbn_bad_request', 'slug is required.', array( 'status' => 400 ) );
+		}
+
+		$slug = sanitize_text_field( $body['slug'] );
+		$plugin_path = pbn_get_plugin_path( $slug );
+
+		if ( ! $plugin_path ) {
+			return new WP_Error( 'pbn_not_found', 'Plugin not found.', array( 'status' => 404 ) );
+		}
+
+		// Deactivate first
+		deactivate_plugins( $plugin_path );
+
+		// Delete
+		$result = delete_plugins( array( $plugin_path ) );
+		if ( is_wp_error( $result ) ) {
+			return $result;
+		}
+
+		return rest_ensure_response( array(
+			'deleted' => true,
+			'slug'    => $slug,
+		) );
+	} catch ( Exception $e ) {
+		return new WP_Error( 'pbn_error', $e->getMessage(), array( 'status' => 500 ) );
+	}
+}
+
+// =========================================================================
+// NEW ENDPOINTS: WordPress Core
+// =========================================================================
+
+/**
+ * POST /pbn/v1/core/update — Update WordPress core
+ */
+function pbn_route_update_core( WP_REST_Request $request ) {
+	try {
+		if ( ! class_exists( 'Core_Upgrader' ) ) {
+			require_once ABSPATH . 'wp-admin/includes/class-wp-upgrader.php';
+		}
+
+		$from_version = get_bloginfo( 'version' );
+		$upgrader = new Core_Upgrader( new WP_Ajax_Upgrader_Skin() );
+		$result = $upgrader->upgrade();
+
+		if ( is_wp_error( $result ) ) {
+			return rest_ensure_response( array(
+				'updated'     => false,
+				'from_version' => $from_version,
+				'to_version'  => $from_version,
+				'error'       => $result->get_error_message(),
+			) );
+		}
+
+		$to_version = get_bloginfo( 'version' );
+
+		return rest_ensure_response( array(
+			'updated'      => true,
+			'from_version' => $from_version,
+			'to_version'   => $to_version,
+		) );
+	} catch ( Exception $e ) {
+		return new WP_Error( 'pbn_error', $e->getMessage(), array( 'status' => 500 ) );
+	}
+}
+
+/**
+ * GET /pbn/v1/core/updates — Check if WordPress core update is available
+ */
+function pbn_route_check_core_updates( WP_REST_Request $request ) {
+	try {
+		$current_version = get_bloginfo( 'version' );
+		$updates = get_core_updates();
+
+		$latest_version = $current_version;
+		$needs_update = false;
+
+		if ( ! empty( $updates ) ) {
+			// First item is the latest available version
+			$latest = array_shift( $updates );
+			$latest_version = $latest->version;
+			$needs_update = version_compare( $current_version, $latest_version, '<' );
+		}
+
+		return rest_ensure_response( array(
+			'current'       => $current_version,
+			'latest'        => $latest_version,
+			'needs_update'  => $needs_update,
+		) );
+	} catch ( Exception $e ) {
+		return new WP_Error( 'pbn_error', $e->getMessage(), array( 'status' => 500 ) );
+	}
+}
+
+// =========================================================================
+// NEW ENDPOINTS: Health & Errors
+// =========================================================================
+
+/**
+ * GET /pbn/v1/health — Comprehensive health check
+ */
+function pbn_route_health_check( WP_REST_Request $request ) {
+	try {
+		$active_plugins = get_option( 'active_plugins', array() );
+		$all_plugins = array();
+
+		if ( function_exists( 'get_plugins' ) ) {
+			$all_plugins = get_plugins();
+		}
+
+		$inactive_count = count( $all_plugins ) - count( $active_plugins );
+
+		// Get disk free space
+		$disk_free_mb = floor( disk_free_space( ABSPATH ) / 1024 / 1024 );
+
+		// Get memory info
+		$memory_limit = wp_convert_hr_to_bytes( WP_MEMORY_LIMIT );
+		$memory_usage = memory_get_usage( true );
+
+		// Get MySQL version
+		global $wpdb;
+		$mysql_version = $wpdb->db_version();
+
+		// Get PHP version
+		$php_version = PHP_VERSION;
+
+		// Get WordPress version
+		$wp_version = get_bloginfo( 'version' );
+
+		// Get last errors from debug.log
+		$debug_log_path = WP_CONTENT_DIR . '/debug.log';
+		$last_errors = array();
+		if ( file_exists( $debug_log_path ) ) {
+			$lines = file( $debug_log_path );
+			$last_errors = array_slice( array_filter( $lines ), -5 );
+		}
+
+		// Get update counts
+		$updates_core = 0;
+		$updates_plugins = 0;
+		$updates_themes = 0;
+
+		$core_updates = get_core_updates();
+		if ( ! empty( $core_updates ) ) {
+			$updates_core = 1;
+		}
+
+		if ( function_exists( 'get_plugins' ) ) {
+			$plugin_updates = get_site_transient( 'update_plugins' );
+			if ( $plugin_updates && ! empty( $plugin_updates->response ) ) {
+				$updates_plugins = count( $plugin_updates->response );
+			}
+		}
+
+		$theme_updates = get_site_transient( 'update_themes' );
+		if ( $theme_updates && ! empty( $theme_updates->response ) ) {
+			$updates_themes = count( $theme_updates->response );
+		}
+
+		return rest_ensure_response( array(
+			'wp_version'       => $wp_version,
+			'php_version'      => $php_version,
+			'mysql_version'    => $mysql_version,
+			'active_plugins'   => count( $active_plugins ),
+			'inactive_plugins' => $inactive_count,
+			'disk_free_mb'     => $disk_free_mb,
+			'last_errors'      => array_map( 'trim', $last_errors ),
+			'memory_limit_mb'  => round( $memory_limit / 1024 / 1024 ),
+			'memory_usage_mb'  => round( $memory_usage / 1024 / 1024 ),
+			'is_multisite'     => is_multisite(),
+			'update_counts'    => array(
+				'core'   => $updates_core,
+				'plugins' => $updates_plugins,
+				'themes'  => $updates_themes,
+			),
+		) );
+	} catch ( Exception $e ) {
+		return new WP_Error( 'pbn_error', $e->getMessage(), array( 'status' => 500 ) );
+	}
+}
+
+/**
+ * GET /pbn/v1/error-log — Get error log lines
+ * Query params: ?lines=50 (default 50, max 200)
+ */
+function pbn_route_error_log( WP_REST_Request $request ) {
+	try {
+		$lines_param = min( 200, absint( $request->get_param( 'lines' ) ?: 50 ) );
+		$debug_log_path = WP_CONTENT_DIR . '/debug.log';
+
+		if ( ! file_exists( $debug_log_path ) ) {
+			return rest_ensure_response( array(
+				'lines' => array(),
+				'total' => 0,
+			) );
+		}
+
+		$lines = file( $debug_log_path );
+		$lines = array_filter( $lines );
+		$lines = array_slice( $lines, -$lines_param );
+
+		return rest_ensure_response( array(
+			'lines' => array_map( 'trim', $lines ),
+			'total' => count( $lines ),
+		) );
+	} catch ( Exception $e ) {
+		return new WP_Error( 'pbn_error', $e->getMessage(), array( 'status' => 500 ) );
+	}
+}
+
+// =========================================================================
+// NEW ENDPOINTS: Cache
+// =========================================================================
+
+/**
+ * POST /pbn/v1/cache/clear — Clear all known caches
+ */
+function pbn_route_clear_cache( WP_REST_Request $request ) {
+	try {
+		$cleared = array();
+
+		// WordPress object cache
+		if ( wp_cache_flush() ) {
+			$cleared[] = 'wp_object_cache';
+		}
+
+		// WP Super Cache
+		if ( function_exists( 'wp_cache_clear_cache' ) ) {
+			wp_cache_clear_cache();
+			$cleared[] = 'wp_super_cache';
+		}
+
+		// W3 Total Cache
+		if ( function_exists( 'w3tc_flush_all' ) ) {
+			w3tc_flush_all();
+			$cleared[] = 'w3_total_cache';
+		}
+
+		// WP Rocket
+		if ( function_exists( 'rocket_clean_domain' ) ) {
+			do_action( 'rocket_clean_domain' );
+			$cleared[] = 'wp_rocket';
+		}
+
+		// Elementor CSS cache
+		if ( class_exists( '\Elementor\Plugin' ) ) {
+			$elementor = \Elementor\Plugin::$instance;
+			if ( $elementor && isset( $elementor->files_manager ) ) {
+				$elementor->files_manager->clear_cache();
+				$cleared[] = 'elementor_css';
+			}
+		}
+
+		// LiteSpeed Cache
+		if ( class_exists( 'LiteSpeed_Cache' ) ) {
+			do_action( 'litespeed_purge_all' );
+			$cleared[] = 'litespeed_cache';
+		}
+
+		return rest_ensure_response( array(
+			'cleared' => $cleared,
+		) );
+	} catch ( Exception $e ) {
+		return new WP_Error( 'pbn_error', $e->getMessage(), array( 'status' => 500 ) );
+	}
+}
+
+// =========================================================================
+// NEW ENDPOINTS: Options
+// =========================================================================
+
+/**
+ * GET /pbn/v1/options — Get key site options
+ */
+function pbn_route_get_options( WP_REST_Request $request ) {
+	try {
+		$active_plugins = get_option( 'active_plugins', array() );
+
+		return rest_ensure_response( array(
+			'blogname'             => get_option( 'blogname' ),
+			'blogdescription'      => get_option( 'blogdescription' ),
+			'siteurl'              => get_option( 'siteurl' ),
+			'home'                 => get_option( 'home' ),
+			'timezone_string'      => get_option( 'timezone_string' ),
+			'date_format'          => get_option( 'date_format' ),
+			'time_format'          => get_option( 'time_format' ),
+			'language'             => get_option( 'WPLANG' ),
+			'admin_email'          => get_option( 'admin_email' ),
+			'active_plugins_count' => count( $active_plugins ),
+		) );
+	} catch ( Exception $e ) {
+		return new WP_Error( 'pbn_error', $e->getMessage(), array( 'status' => 500 ) );
+	}
+}
+
+/**
+ * PATCH /pbn/v1/options — Update allowed options
+ * Whitelist: blogname, blogdescription, timezone_string, date_format, time_format, language, admin_email
+ */
+function pbn_route_update_options( WP_REST_Request $request ) {
+	try {
+		$body = $request->get_json_params();
+		if ( empty( $body ) ) {
+			$body = $request->get_params();
+		}
+
+		$whitelist = array(
+			'blogname',
+			'blogdescription',
+			'timezone_string',
+			'date_format',
+			'time_format',
+			'language',
+			'admin_email',
+		);
+
+		$updated = array();
+		foreach ( $whitelist as $option_key ) {
+			if ( isset( $body[ $option_key ] ) ) {
+				$value = $body[ $option_key ];
+
+				// Sanitize based on option type
+				if ( 'admin_email' === $option_key ) {
+					$value = sanitize_email( $value );
+					if ( ! is_email( $value ) ) {
+						continue;
+					}
+				} elseif ( 'timezone_string' === $option_key ) {
+					$value = sanitize_text_field( $value );
+				} else {
+					$value = sanitize_text_field( $value );
+				}
+
+				update_option( $option_key, $value );
+				$updated[ $option_key ] = $value;
+			}
+		}
+
+		return rest_ensure_response( array(
+			'updated' => $updated,
+		) );
+	} catch ( Exception $e ) {
+		return new WP_Error( 'pbn_error', $e->getMessage(), array( 'status' => 500 ) );
+	}
+}
+
+// =========================================================================
+// NEW ENDPOINTS: Maintenance
+// =========================================================================
+
+/**
+ * GET /pbn/v1/maintenance — Check if maintenance mode is active
+ */
+function pbn_route_get_maintenance( WP_REST_Request $request ) {
+	try {
+		$maintenance_file = ABSPATH . '.maintenance';
+		$is_active = file_exists( $maintenance_file );
+
+		return rest_ensure_response( array(
+			'enabled' => $is_active,
+		) );
+	} catch ( Exception $e ) {
+		return new WP_Error( 'pbn_error', $e->getMessage(), array( 'status' => 500 ) );
+	}
+}
+
+/**
+ * POST /pbn/v1/maintenance — Enable/disable maintenance mode
+ * Body: {enabled: true/false}
+ */
+function pbn_route_set_maintenance( WP_REST_Request $request ) {
+	try {
+		$body = $request->get_json_params();
+		if ( empty( $body ) ) {
+			$body = $request->get_params();
+		}
+
+		if ( ! isset( $body['enabled'] ) ) {
+			return new WP_Error( 'pbn_bad_request', 'enabled is required.', array( 'status' => 400 ) );
+		}
+
+		$enabled = (bool) $body['enabled'];
+		$maintenance_file = ABSPATH . '.maintenance';
+
+		if ( $enabled ) {
+			// Create maintenance file
+			$maint_content = "<?php\ndefine( 'ABSPATH', '" . ABSPATH . "' );\nrequire ABSPATH . 'wp-load.php';\nwp_die( 'Briefly unavailable for scheduled maintenance. Check back in a minute.' );\n";
+			file_put_contents( $maintenance_file, $maint_content );
+		} else {
+			// Delete maintenance file
+			if ( file_exists( $maintenance_file ) ) {
+				unlink( $maintenance_file );
+			}
+		}
+
+		return rest_ensure_response( array(
+			'enabled' => $enabled,
+		) );
+	} catch ( Exception $e ) {
+		return new WP_Error( 'pbn_error', $e->getMessage(), array( 'status' => 500 ) );
+	}
+}
+
+// =========================================================================
 // Helpers
-// ---------------------------------------------------------------------------
+// =========================================================================
 
 /**
  * Builds a wp_insert_post / wp_update_post compatible array from API body.
@@ -536,4 +1315,81 @@ function pbn_format_post( WP_Post $post ) {
 		'meta_title'             => get_post_meta( $post->ID, 'pbn_meta_title', true ),
 		'meta_description'       => get_post_meta( $post->ID, 'pbn_meta_description', true ),
 	);
+}
+
+/**
+ * Get plugin file path from slug.
+ *
+ * @param string $slug
+ * @return string|null
+ */
+function pbn_get_plugin_path( $slug ) {
+	if ( ! function_exists( 'get_plugins' ) ) {
+		require_once ABSPATH . 'wp-admin/includes/plugin.php';
+	}
+
+	$all_plugins = get_plugins();
+
+	foreach ( $all_plugins as $plugin_path => $plugin_data ) {
+		$plugin_slug = dirname( $plugin_path );
+		if ( '.' === $plugin_slug ) {
+			$plugin_slug = basename( $plugin_path, '.php' );
+		}
+
+		if ( $plugin_slug === $slug ) {
+			return $plugin_path;
+		}
+	}
+
+	return null;
+}
+
+/**
+ * Upgrade a single plugin by plugin path.
+ *
+ * @param string $plugin_path
+ * @return string|WP_Error Plugin slug on success, WP_Error on failure
+ */
+function pbn_upgrade_single_plugin( $plugin_path ) {
+	if ( ! class_exists( 'Plugin_Upgrader' ) ) {
+		require_once ABSPATH . 'wp-admin/includes/class-wp-upgrader.php';
+	}
+
+	$upgrader = new Plugin_Upgrader( new WP_Ajax_Upgrader_Skin() );
+
+	// Get the plugin's download link from the update transient
+	$updates = get_site_transient( 'update_plugins' );
+	if ( ! $updates || ! isset( $updates->response[ $plugin_path ] ) ) {
+		return new WP_Error( 'pbn_no_update', 'No update available for this plugin.' );
+	}
+
+	$plugin_update_info = $updates->response[ $plugin_path ];
+	$result = $upgrader->upgrade( $plugin_path );
+
+	if ( is_wp_error( $result ) ) {
+		return $result;
+	}
+
+	$slug = dirname( $plugin_path );
+	if ( '.' === $slug ) {
+		$slug = basename( $plugin_path, '.php' );
+	}
+
+	return $slug;
+}
+
+/**
+ * Get plugin path from a zip file URL (attempts to extract from typical wp.org pattern).
+ *
+ * @param string $download_url
+ * @return string|null
+ */
+function pbn_get_plugin_path_from_zip( $download_url ) {
+	// Try to extract slug from URL
+	if ( preg_match( '#/([a-z0-9-]+)\.zip$#i', $download_url, $matches ) ) {
+		$slug = $matches[1];
+		return pbn_get_plugin_path( $slug );
+	}
+
+	return null;
 }

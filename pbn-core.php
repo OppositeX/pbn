@@ -3,7 +3,7 @@
  * Plugin Name: PBN Core
  * Plugin URI:  https://github.com/OppositeX/pbn
  * Description: Central control plugin for PBN network — REST API, auto-updates, lead forms, and Polylang helpers.
- * Version:     1.0.0
+ * Version:     1.1.0
  * Author:      OppositeX
  * Author URI:  https://github.com/OppositeX
  * Text Domain: pbn-core
@@ -20,7 +20,7 @@ if ( ! defined( 'ABSPATH' ) ) {
 // ---------------------------------------------------------------------------
 // Constants
 // ---------------------------------------------------------------------------
-define( 'PBN_VERSION',    '1.0.0' );
+define( 'PBN_VERSION',    '1.1.0' );
 define( 'PBN_PLUGIN_DIR', plugin_dir_path( __FILE__ ) );
 define( 'PBN_PLUGIN_URL', plugin_dir_url( __FILE__ ) );
 
